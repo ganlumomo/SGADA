@@ -47,7 +47,7 @@ def run(args):
     
     # generate label files
     criterion = nn.CrossEntropyLoss()
-    validataion = validate_label(target_cnn, discriminator, target_train_loader, target_train_path, criterion, args=args)
+    validation = validate_label(target_cnn, discriminator, target_train_loader, target_train_path, criterion, args=args)
     clsNames = validation['classNames']
     for cls_idx, clss in enumerate(clsNames):
         logger.info('{}: {}'.format(clss, validation['classAcc'][cls_idx]))
