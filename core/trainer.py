@@ -233,7 +233,7 @@ def validate(model, dataloader, criterion, args=None):
     }
 
     
-def validate_label(model, discriminator, dataloader, datapath, criterion, args=None):
+def validate_pseudo_label(model, discriminator, dataloader, datapath, criterion, args=None):
     model.eval()
     losses = AverageMeter()
     targets, probas = [], []
@@ -265,8 +265,9 @@ def validate_label(model, discriminator, dataloader, datapath, criterion, args=N
             d_pred_cls = d_output.data.max(1)[1]
             d_output = torch.softmax(d_output, dim=1)
             weights = [17.13749324689357, 3.0090590020868904, 1.6411775357632512]
-            f.write(datapath[int(iter_i)][0][36:] + ' ' + str(pred_cls[0].cpu().numpy()) + ' ' + str(output[0, pred_cls][0].cpu().numpy()) + ' ' 
-                    + str(d_pred_cls[0].cpu().numpy()) + ' ' + str(d_output[0, d_pred_cls][0].cpu().numpy()) + ' ' + str(weights[target]) + '\n')
+            if datapath:
+                f.write(datapath[int(iter_i)][0][36:] + ' ' + str(pred_cls[0].cpu().numpy()) + ' ' + str(output[0, pred_cls][0].cpu().numpy()) + ' ' 
+                        + str(d_pred_cls[0].cpu().numpy()) + ' ' + str(d_output[0, d_pred_cls][0].cpu().numpy()) + ' ' + str(weights[target]) + '\n')
             losses.update(loss.item(), bs)
             targets.extend(target.cpu().numpy().tolist())
             probas.extend(output.cpu().numpy().tolist())

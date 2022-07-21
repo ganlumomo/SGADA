@@ -7,7 +7,7 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from models.resnet50off import CNN, Discriminator
-from core.trainer import train_target_cnnP_domain, validate_label
+from core.trainer import train_target_cnnP_domain, validate_pseudo_label
 from utils.utils import get_logger
 from utils.altutils import get_mscoco, get_flir, get_flir_from_list_wdomain
 from utils.altutils import setLogger
@@ -23,13 +23,15 @@ def run(args):
     # data loaders
     #dataset_root = os.environ["DATASETDIR"]
     dataset_root = './dataset_dir/'
+    source_train_loader = get_mscoco(dataset_root, args.batch_size, train=True)
+    source_val_loader = get_mscoco(dataset_root, args.batch_size, train=False)
     target_train_loader, target_train_path = get_flir(dataset_root, args.batch_size, train=True)
     target_val_loader, _ = get_flir(dataset_root, args.batch_size, train=False)
 
     args.classInfo = {'classes': torch.unique(torch.tensor(target_train_loader.dataset.targets)),
                     'classNames': target_train_loader.dataset.classes}
 
-    logger.info('Pseudo labeling')
+    logger.info('Testing')
 
     # load target CNN
     target_cnn = CNN(in_channels=args.in_channels, target=True, srcTrain=False).to(args.device)
@@ -47,11 +49,11 @@ def run(args):
     
     # generate label files
     criterion = nn.CrossEntropyLoss()
-    validation = validate_label(target_cnn, discriminator, target_train_loader, target_train_path, criterion, args=args)
+    validation = validate_pseudo_label(target_cnn, discriminator, target_val_loader, None, criterion, args=args)
     clsNames = validation['classNames']
     for cls_idx, clss in enumerate(clsNames):
         logger.info('{}: {}'.format(clss, validation['classAcc'][cls_idx]))
-    log = '[Val] Target/Loss {:.3f} Target/Acc {:.3f} '.format(
+    log = '[Val] Target/Loss {:.4f} Target/Acc {:.4f} '.format(
         validation['loss'], validation['acc'])
     logger.info(log)
 
