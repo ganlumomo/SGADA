@@ -152,7 +152,8 @@ def get_flir(dataset_root, batch_size, train):
             batch_size=batch_size,
             shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
-    return flir_data_loader, flir_dataset.samples
+    #return flir_data_loader, flir_dataset.samples
+    return flir_data_loader
 
 
 def get_flir_from_list_wdomain(dataset_root, batch_size, train):
