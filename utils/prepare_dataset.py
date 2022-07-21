@@ -296,7 +296,8 @@ def parse_flir_val(datasetDir, annotations):
 
 
 def main():
-    datasetDir = os.environ['DATASETDIR']
+    #datasetDir = os.environ['DATASETDIR']
+    datasetDir = './dataset_dir/'
 
     print(f'Creating output dirs if not exist under {datasetDir}')
     create_dirs(datasetDir)

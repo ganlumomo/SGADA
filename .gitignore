@@ -1,4 +1,6 @@
 outputs*
+dataset_dir*
+sgada_model_files*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

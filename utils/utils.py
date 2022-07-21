@@ -10,6 +10,9 @@ def save(log_dir, state_dict, is_best):
         best_model_path = os.path.join(log_dir, 'best_model.pt')
         shutil.copyfile(checkpoint_path, best_model_path)
 
+def d_save(log_dir, state_dict):
+    checkpoint_path = os.path.join(log_dir, 'd_checkpoint.pt')
+    torch.save(state_dict, checkpoint_path)
 
 def get_logger(log_file):
     from logging import getLogger, FileHandler, StreamHandler, Formatter, DEBUG, INFO  # noqa

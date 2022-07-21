@@ -7,7 +7,7 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from models.resnet50off import CNN, Discriminator
-from core.trainer import train_target_cnnP_domain
+from core.trainer import train_target_cnnP_domain, validate_label
 from utils.utils import get_logger
 from utils.altutils import get_mscoco, get_flir, get_flir_from_list_wdomain
 from utils.altutils import setLogger
@@ -23,54 +23,37 @@ def run(args):
     # data loaders
     #dataset_root = os.environ["DATASETDIR"]
     dataset_root = './dataset_dir/'
-    source_train_loader = get_mscoco(dataset_root, args.batch_size, train=True)
-    target_train_loader = get_flir(dataset_root, args.batch_size, train=True)
-    target_val_loader = get_flir(dataset_root, args.batch_size, train=False)
-    target_conf_train_loader = get_flir_from_list_wdomain(dataset_root, args.batch_size, train=True)
+    target_train_loader, target_train_path = get_flir(dataset_root, args.batch_size, train=True)
+    target_val_loader, _ = get_flir(dataset_root, args.batch_size, train=False)
 
-    args.classInfo = {'classes': torch.unique(torch.tensor(source_train_loader.dataset.targets)),
-                    'classNames': source_train_loader.dataset.classes}
+    args.classInfo = {'classes': torch.unique(torch.tensor(target_train_loader.dataset.targets)),
+                    'classNames': target_train_loader.dataset.classes}
 
-    logger.info('SGADA training')
+    logger.info('Pseudo labeling')
 
-    # train source CNN
-    source_cnn = CNN(in_channels=args.in_channels).to(args.device)
+    # load target CNN
+    target_cnn = CNN(in_channels=args.in_channels, target=True, srcTrain=False).to(args.device)
     if os.path.isfile(args.trained):
         c = torch.load(args.trained)
-        source_cnn.load_state_dict(c['model'])
+        target_cnn.load_state_dict(c['model'])
         logger.info('Loaded `{}`'.format(args.trained))
-    for param in source_cnn.parameters():
-        param.requires_grad = False
 
-    # train target CNN
-    target_cnn = CNN(in_channels=args.in_channels, target=True, srcTrain=False).to(args.device)
-    target_cnn.load_state_dict(source_cnn.state_dict())
-    for param in target_cnn.classifier.parameters():
-        param.requires_grad = False
-    optimizer = optim.Adam(
-        target_cnn.encoder.parameters(), 
-        lr=args.lr, betas=args.betas, 
-        weight_decay=args.weight_decay)
-
+    # load discriminator
     discriminator = Discriminator(args=args).to(args.device)
-    criterion = nn.CrossEntropyLoss()
-    d_optimizer = optim.Adam(
-        discriminator.parameters(),
-        lr=args.d_lr, betas=args.betas, weight_decay=args.weight_decay)
-    best_acc, best_class, classNames = train_target_cnnP_domain(
-        source_cnn, target_cnn, discriminator,
-        criterion, optimizer, d_optimizer,
-        source_train_loader, target_train_loader, target_val_loader,
-        logger, args=args)
-    bestClassWiseDict = {}
-    for cls_idx, clss in enumerate(classNames):
-        bestClassWiseDict[clss] = best_class[cls_idx].item()
-    logger.info('Best acc.: {}'.format(best_acc))
-    logger.info('Best acc. (Classwise):')
-    logger.info(bestClassWiseDict)
+    if os.path.isfile(args.d_trained):
+        c = torch.load(args.d_trained)
+        discriminator.load_state_dict(c['model'])
+        logger.info('Loaded `{}`'.format(args.d_trained))
     
-    return best_acc, bestClassWiseDict
-
+    # generate label files
+    criterion = nn.CrossEntropyLoss()
+    validataion = validate_label(target_cnn, discriminator, target_train_loader, target_train_path, criterion, args=args)
+    clsNames = validation['classNames']
+    for cls_idx, clss in enumerate(clsNames):
+        logger.info('{}: {}'.format(clss, validation['classAcc'][cls_idx]))
+    log = '[Val] Target/Loss {:.3f} Target/Acc {:.3f} '.format(
+        validation['loss'], validation['acc'])
+    logger.info(log)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -78,6 +61,7 @@ if __name__ == '__main__':
     parser.add_argument('--in_channels', type=int, default=3)
     parser.add_argument('--n_classes', type=int, default=3)
     parser.add_argument('--trained', type=str, default='')
+    parser.add_argument('--d_trained', type=str, default='')
     parser.add_argument('--slope', type=float, default=0.2)
     # train
     parser.add_argument('--lr', type=float, default=1e-5)

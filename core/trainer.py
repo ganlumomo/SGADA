@@ -5,7 +5,7 @@ from time import time
 import numpy as np
 from sklearn.metrics import accuracy_score
 import torch
-from utils.utils import AverageMeter, save
+from utils.utils import AverageMeter, save, d_save
 
 
 def train_target_cnnP_domain(
@@ -60,7 +60,14 @@ def train_target_cnnP_domain(
                 'epoch': epoch_i,
                 'val/acc': best_score,
             }
+            d_state_dict = {
+                'model': discriminator.state_dict(),
+                'optimizer': d_optimizer.state_dict(),
+                'epoch': epoch_i,
+                'loss': training['d/loss'],
+            }
             save(args.logdir, state_dict, is_best)
+            d_save(args.logdir, d_state_dict)
             for cls_idx, clss in enumerate(clsNames):
                 logger.info('{}: {}'.format(clss, validation['classAcc'][cls_idx]))
             logger.info('Current val. acc.: {}'.format(validation['avgAcc']))
@@ -97,13 +104,14 @@ def adversarial_domain(
     source_iter, target_iter = iter(source_loader), iter(target_loader)
     for iter_i in range(n_iters):
         source_data, source_target = source_iter.next()
-        target_data, target_target, target_conf, target_domain, target_domain_conf = target_iter.next()
+        #target_data, target_target, target_conf, target_domain, target_domain_conf = target_iter.next()
+        target_data, target_target = target_iter.next()
         source_data = source_data.to(args.device)
         target_data = target_data.to(args.device)
         target_target = target_target.to(args.device)
-        target_conf = target_conf.to(args.device)
-        target_domain = target_domain.to(args.device)
-        target_domain_conf = target_domain_conf.to(args.device)
+        #target_conf = target_conf.to(args.device)
+        #target_domain = target_domain.to(args.device)
+        #target_domain_conf = target_domain_conf.to(args.device)
         bs = source_data.size(0)
 
         D_input_source = source_cnn.encoder(source_data)
@@ -129,13 +137,14 @@ def adversarial_domain(
         D_output_target = discriminator(D_input_target)
         D_output_target_P = target_cnn.classifier(D_input_target)
         lossT = criterion(D_output_target, D_target_source)
-        validSource = (target_domain == 0) & (target_conf >= args.thr)
-        validMaskSource = validSource.nonzero(as_tuple=False)[:, 0]
-        validTarget = (target_domain == 1) & (target_domain_conf <= args.thr_domain) & (target_conf >= args.thr)
-        validMaskTarget = validTarget.nonzero(as_tuple=False)[:, 0]
-        validIndexes = torch.cat((validMaskSource, validMaskTarget), 0)
-        lossP = criterion(D_output_target_P[validIndexes], target_target[validIndexes])
-        loss = lossT + args.lam*lossP
+        #validSource = (target_domain == 0) & (target_conf >= args.thr)
+        #validMaskSource = validSource.nonzero(as_tuple=False)[:, 0]
+        #validTarget = (target_domain == 1) & (target_domain_conf <= args.thr_domain) & (target_conf >= args.thr)
+        #validMaskTarget = validTarget.nonzero(as_tuple=False)[:, 0]
+        #validIndexes = torch.cat((validMaskSource, validMaskTarget), 0)
+        #lossP = criterion(D_output_target_P[validIndexes], target_target[validIndexes])
+        #loss = lossT + args.lam*lossP
+        loss = lossT
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -154,7 +163,14 @@ def adversarial_domain(
                 'epoch': epoch_i,
                 'val/acc': best_score,
             }
+            d_state_dict = {
+                'model': discriminator.state_dict(),
+                'optimizer': d_optimizer.state_dict(),
+                'epoch': epoch_i,
+                'loss': d_losses.avg,
+            }
             save(args.logdir, state_dict, is_best)
+            d_save(args.logdir, d_state_dict)
             logger.info('Epoch_{} Iter_{}'.format(epoch_i, iter_i))
             for cls_idx, clss in enumerate(clsNames):
                 logger.info('{}: {}'.format(clss, validation['classAcc'][cls_idx]))
@@ -201,6 +217,56 @@ def validate(model, dataloader, criterion, args=None):
                 class_acc[class_idx] += pred_cls[idxes].cpu().eq(target[idxes].data).cpu().sum()
                 class_len[class_idx] += len(idxes)
             output = torch.softmax(output, dim=1)
+            losses.update(loss.item(), bs)
+            targets.extend(target.cpu().numpy().tolist())
+            probas.extend(output.cpu().numpy().tolist())
+    probas = np.asarray(probas)
+    preds = np.argmax(probas, axis=1)
+    acc = accuracy_score(targets, preds)
+    class_acc /= class_len
+    avgAcc = 0.0
+    for i in range(len(class_acc)):
+        avgAcc += class_acc[i]
+    avgAcc = avgAcc / len(class_acc)
+    return {
+        'loss': losses.avg, 'acc': acc, 'avgAcc': avgAcc, 'classAcc': class_acc, 'classNames': classNames,
+    }
+
+    
+def validate_label(model, discriminator, dataloader, datapath, criterion, args=None):
+    model.eval()
+    losses = AverageMeter()
+    targets, probas = [], []
+    if args.classInfo == None:
+        classes = torch.unique(torch.tensor(dataloader.dataset.targets))
+        classNames = dataloader.dataset.classes
+    else:
+        classes = args.classInfo['classes']
+        classNames = args.classInfo['classNames']
+    class_acc = torch.zeros(len(classes))
+    class_len = torch.zeros(len(classes))
+    acc_ev = 0
+    with torch.no_grad():
+        f = open('label.txt', 'w')
+        for iter_i, (data, target) in enumerate(dataloader):
+            data = data.to(args.device)
+            target = target.to(args.device)
+            bs = target.size(0)
+            output, loss = step(model, data, target, criterion, args)
+            pred_cls = output.data.max(1)[1]
+            acc_ev += pred_cls.cpu().eq(target.data.cpu()).cpu().sum()
+            for class_idx, class_id in enumerate(classes):
+                idxes = torch.nonzero(target==class_id.to(target.device), as_tuple=False)
+                class_acc[class_idx] += pred_cls[idxes].cpu().eq(target[idxes].data.cpu()).cpu().sum()
+                class_len[class_idx] += len(idxes)
+            output = torch.softmax(output, dim=1)
+            d_input = model.encoder(data)
+            d_output = discriminator(d_input)
+            d_pred_cls = d_output.data.max(1)[1]
+            d_output = torch.softmax(d_output, dim=1)
+            weights = [17.13749324689357, 3.0090590020868904, 1.6411775357632512]
+            f.write(datapath[int(iter_i)][0][36:] + ' ' + str(pred_cls[0].cpu().numpy()) + ' ' + str(output[0, pred_cls][0].cpu().numpy()) + ' ' 
+                    + str(d_pred_cls[0].cpu().numpy()) + ' ' + str(d_output[0, d_pred_cls][0].cpu().numpy()) + ' ' + str(weights[target]) + '\n')
             losses.update(loss.item(), bs)
             targets.extend(target.cpu().numpy().tolist())
             probas.extend(output.cpu().numpy().tolist())

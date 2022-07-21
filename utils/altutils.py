@@ -131,13 +131,14 @@ def get_flir(dataset_root, batch_size, train):
         weight = make_weight_for_balanced_classes(flir_dataset.imgs, len(flir_dataset.classes))
         weight=torch.DoubleTensor(weight)
 
-        sampler = torch.utils.data.sampler.WeightedRandomSampler(weight, len(weight))
+        #sampler = torch.utils.data.sampler.WeightedRandomSampler(weight, len(weight))
 
         flir_data_loader = torch.utils.data.DataLoader(
             dataset=flir_dataset,
             batch_size=batch_size,
             shuffle=False,
-            sampler=sampler, num_workers=4, pin_memory=True, drop_last=True)
+            #sampler=sampler, 
+            num_workers=1, pin_memory=True, drop_last=True)
     else:
         pre_process = transforms.Compose([transforms.Resize((224, 224)),
                                       transforms.ToTensor(),
@@ -151,7 +152,7 @@ def get_flir(dataset_root, batch_size, train):
             batch_size=batch_size,
             shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
 
-    return flir_data_loader
+    return flir_data_loader, flir_dataset.samples
 
 
 def get_flir_from_list_wdomain(dataset_root, batch_size, train):
