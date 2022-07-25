@@ -25,19 +25,19 @@ def run(args):
     dataset_root = './dataset_dir/'
     source_train_loader = get_mscoco(dataset_root, args.batch_size, train=True)
     source_val_loader = get_mscoco(dataset_root, args.batch_size, train=False)
-    target_train_loader, target_train_path = get_flir(dataset_root, args.batch_size, train=True)
-    target_val_loader, _ = get_flir(dataset_root, args.batch_size, train=False)
+    target_train_loader = get_flir(dataset_root, args.batch_size, train=True)
+    target_val_loader = get_flir(dataset_root, args.batch_size, train=False)
 
-    args.classInfo = {'classes': torch.unique(torch.tensor(target_train_loader.dataset.targets)),
-                    'classNames': target_train_loader.dataset.classes}
+    args.classInfo = {'classes': torch.unique(torch.tensor(source_train_loader.dataset.targets)),
+                      'classNames': source_train_loader.dataset.classes}
 
     logger.info('Testing')
 
-    # load target CNN
-    target_cnn = CNN(in_channels=args.in_channels, target=True, srcTrain=False).to(args.device)
+    # load source or target CNN
+    cnn = CNN(in_channels=args.in_channels, target=True, srcTrain=False).to(args.device)
     if os.path.isfile(args.trained):
         c = torch.load(args.trained)
-        target_cnn.load_state_dict(c['model'])
+        cnn.load_state_dict(c['model'])
         logger.info('Loaded `{}`'.format(args.trained))
 
     # load discriminator
@@ -49,12 +49,12 @@ def run(args):
     
     # generate label files
     criterion = nn.CrossEntropyLoss()
-    validation = validate_pseudo_label(target_cnn, discriminator, target_val_loader, None, criterion, args=args)
+    validation = validate_pseudo_label(cnn, discriminator, target_val_loader, None, criterion, args=args)
     clsNames = validation['classNames']
     for cls_idx, clss in enumerate(clsNames):
         logger.info('{}: {}'.format(clss, validation['classAcc'][cls_idx]))
-    log = '[Val] Target/Loss {:.4f} Target/Acc {:.4f} '.format(
-        validation['loss'], validation['acc'])
+    log = '[Val] Target/Loss {:.4f} Target/Acc {:.4f} Target/avgAcc {:.4f} '.format(
+        validation['loss'], validation['acc'], validation['avgAcc'])
     logger.info(log)
 
 if __name__ == '__main__':
@@ -79,7 +79,7 @@ if __name__ == '__main__':
     # misc
     parser.add_argument('--device', type=str, default='cuda:1')
     parser.add_argument('--n_workers', type=int, default=4)
-    parser.add_argument('--logdir', type=str, default='outputs/sgada_domain')
+    parser.add_argument('--logdir', type=str, default='outputs/test')
     # office dataset categories
     parser.add_argument('--src_cat', type=str, default='mscoco')
     parser.add_argument('--tgt_cat', type=str, default='flir')

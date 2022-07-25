@@ -8,6 +8,47 @@ import torch
 from utils.utils import AverageMeter, save, d_save
 
 
+def train_source_cnn(
+    source_cnn, train_loader, test_loader, criterion, optimizer,
+    logger, args=None
+):
+    try:
+        best_score = None
+        for epoch_i in range(1, 1 + args.epochs):
+            start_time = time()
+            training = train(
+                source_cnn, train_loader, criterion, optimizer, args=args)
+            validation = validate(
+                source_cnn, test_loader, criterion, args=args)
+            log = 'Epoch {}/{} '.format(epoch_i, args.epochs)
+            log += '| Train/Loss {:.3f} Acc {:.3f} '.format(
+                training['loss'], training['acc'])
+            log += '| Val/Loss {:.3f} Acc {:.3f} '.format(
+                validation['loss'], validation['acc'])
+            log += 'Time {:.2f}s'.format(time() - start_time)
+            logger.info(log)
+
+            # save
+            is_best = (best_score is None or validation['avgAcc'] > best_score)
+            best_score = validation['avgAcc'] if is_best else best_score
+            best_class_score = validation['classAcc'] if is_best else best_class_score
+            state_dict = {
+                'model': source_cnn.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'epoch': epoch_i,
+                'val/acc': best_score,
+            }
+            save(args.logdir, state_dict, is_best)
+            logger.info('Best val. acc.: {}'.format(best_score))
+            logger.info('Best val. Classwise accuracies: {}'.format(best_class_score))
+    except KeyboardInterrupt as ke:
+        logger.info('\n============ Summary ============= \n')
+        logger.info('Best val. acc.: {}'.format(best_score))
+        logger.info('Best val. Classwise accuracies: {}'.format(best_class_score))
+
+    return source_cnn
+
+
 def train_target_cnnP_domain(
     source_cnn,
     target_cnn,
@@ -191,6 +232,30 @@ def step(model, data, target, criterion, args):
     output = model(data)
     loss = criterion(output, target)
     return output, loss
+
+
+def train(model, dataloader, criterion, optimizer, args=None):
+    model.train()
+    losses = AverageMeter()
+    targets, probas = [], []
+    for i, (data, target) in enumerate(dataloader):
+        bs = target.size(0)
+        output, loss = step(model, data, target, criterion, args)
+        output = torch.softmax(output, dim=1)  # NOTE
+        losses.update(loss.item(), bs)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        targets.extend(target.cpu().detach().numpy().tolist())
+        probas.extend(output.cpu().detach().numpy().tolist())
+    probas = np.asarray(probas)
+    preds = np.argmax(probas, axis=1)
+    acc = accuracy_score(targets, preds)
+    return {
+        'loss': losses.avg, 'acc': acc,
+    }
 
 
 def validate(model, dataloader, criterion, args=None):
