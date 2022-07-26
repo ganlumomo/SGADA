@@ -64,35 +64,33 @@ def run(args):
     
     # train generator
     generator = networks.define_G(input_nc=args.in_channels, output_nc=args.in_channels, ngf=64,
-        netG='resnet_4blocks', norm='instance', use_dropout=False,
+        netG='resnet_9blocks', norm='instance', use_dropout=False,
         init_type='xavier', init_gain=0.02, no_antialias=False,
         no_antialias_up=False, gpu_ids=[int(args.device[-1])], opt=None)
-    #print(generator)
     g_optimizer = optim.Adam(
         generator.parameters(),
         lr=args.g_lr, betas=args.betas)
     projector = networks.define_F(input_nc=args.in_channels, netF='mlp_sample', norm='instance',
         use_dropout=False, init_type='xavier', init_gain=0.02,
         no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
-    #p_optimizer = optim.Adam(
-    #    projector.parameters(),
-    #    lr=args.g_lr, betas=args.betas,
-    #    weight_decay=args.weight_decay)
     
-    #discriminator = networks.define_D(input_nc=args.in_channels, ndf=64, netD='basic',
-    #    n_layers_D=3, norm='instance', init_type='xavier',
-    #    init_gain=0.02, no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
-    discriminator = Discriminator(args=args).to(args.device)
-    d_optimizer = optim.Adam(
-        discriminator.parameters(),
+    sample_discriminator = networks.define_D(input_nc=args.in_channels, ndf=64, netD='basic',
+        n_layers_D=3, norm='instance', init_type='xavier',
+        init_gain=0.02, no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
+    feature_discriminator = Discriminator(args=args).to(args.device)
+    sd_optimizer = optim.Adam(
+        sample_discriminator.parameters(),
+        lr=args.d_lr, betas=args.betas)
+    fd_optimizer = optim.Adam(
+        feature_discriminator.parameters(),
         lr=args.d_lr, betas=args.betas)
 
     criterion = nn.CrossEntropyLoss()
-    criterionGAN = nn.CrossEntropyLoss()
-    #criterionGAN = networks.GANLoss('lsgan').to(args.device)
+    sd_criterion = networks.GANLoss('lsgan').to(args.device)
+    fd_criterion = nn.CrossEntropyLoss()
     best_acc, best_class, classNames = train_generator_domain(
-        source_cnn, generator, projector, discriminator,
-        criterion, criterionGAN, g_optimizer, d_optimizer,
+        source_cnn, generator, projector, sample_discriminator, feature_discriminator,
+        criterion, sd_criterion, fd_criterion, g_optimizer, sd_optimizer, fd_optimizer,
         source_train_loader, target_conf_train_loader, target_val_loader,
         logger, wandb, args=args)
     bestClassWiseDict = {}

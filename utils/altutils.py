@@ -77,8 +77,8 @@ def get_mscoco(dataset_root, batch_size, train):
         pre_process = transforms.Compose([
             transforms.Resize((224, 224)), 
             transforms.ToTensor(),
-            transforms.Normalize(mean=(0.4017, 0.3791, 0.3656), std=(0.2093, 0.2019, 0.1996))
-            #transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+            #transforms.Normalize(mean=(0.4017, 0.3791, 0.3656), std=(0.2093, 0.2019, 0.1996))
+            transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
         ])
         mscoco_dataset = datasets.ImageFolder(root=os.path.join(dataset_root, 'sgada_data/mscoco/train'),
                                              transform=pre_process)
@@ -143,8 +143,8 @@ def get_flir(dataset_root, batch_size, train):
     else:
         pre_process = transforms.Compose([transforms.Resize((224, 224)),
                                           transforms.ToTensor(),
-                                          transforms.Normalize(mean=(0.5587, 0.5587, 0.558), std=(0.1394, 0.1394, 0.1394))
-                                          #transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+                                          #transforms.Normalize(mean=(0.5587, 0.5587, 0.558), std=(0.1394, 0.1394, 0.1394))
+                                          transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
                                          ])
         flir_dataset = datasets.ImageFolder(root=os.path.join(dataset_root, 'sgada_data/flir/val'),
                                             transform=pre_process)
@@ -171,10 +171,10 @@ def get_flir_from_list_wdomain(dataset_root, batch_size, train):
     # dataset and data loader
     if train:
         pre_process = transforms.Compose([transforms.Resize((224, 224)),
-                                      transforms.ToTensor(),
-                                      transforms.Normalize(
-                                          mean=(0.5776, 0.5776, 0.5776),
-                                          std=(0.1319, 0.1319, 0.1319))])
+                                          transforms.ToTensor(),
+                                          #transforms.Normalize(mean=(0.5776, 0.5776, 0.5776), std=(0.1319, 0.1319, 0.1319))
+                                          transforms.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5))
+                                         ])
         flir_dataset = ImageFileListWeightDomain(root=dataset_root, imageFolder='sgada_data/flir/train', flist=os.path.join(dataset_root, 'sgada_data/flir', 'validation_wconf_wdomain_weights.txt'),
                                             transform=pre_process)
         weight = flir_dataset.weights
