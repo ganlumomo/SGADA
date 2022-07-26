@@ -13,6 +13,7 @@ from utils.utils import get_logger
 from utils.altutils import get_mscoco, get_flir, get_flir_from_list_wdomain
 from utils.altutils import setLogger
 import logging
+import wandb
 
 
 def run(args):
@@ -20,6 +21,12 @@ def run(args):
         os.makedirs(args.logdir)
     logger = get_logger(os.path.join(args.logdir, 'train_sgada.log'))
     logger.info(args)
+    wandb.init(
+        project='domain-exp-classification', 
+        config={
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+        })
 
     # data loaders
     #dataset_root = os.environ["DATASETDIR"]
@@ -58,36 +65,36 @@ def run(args):
     # train generator
     generator = networks.define_G(input_nc=args.in_channels, output_nc=args.in_channels, ngf=64,
         netG='resnet_4blocks', norm='instance', use_dropout=False,
-        init_type='xavier', init_gain=0.02, no_antialias=True,
-        no_antialias_up=True, gpu_ids=[int(args.device[-1])], opt=None)
-    print(generator)
+        init_type='xavier', init_gain=0.02, no_antialias=False,
+        no_antialias_up=False, gpu_ids=[int(args.device[-1])], opt=None)
+    #print(generator)
     g_optimizer = optim.Adam(
         generator.parameters(),
-        lr=args.g_lr, betas=args.betas,
-        weight_decay=args.weight_decay)
+        lr=args.g_lr, betas=args.betas)
     projector = networks.define_F(input_nc=args.in_channels, netF='mlp_sample', norm='instance',
         use_dropout=False, init_type='xavier', init_gain=0.02,
-        no_antialias=True, gpu_ids=[int(args.device[-1])], opt=args)
+        no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
     #p_optimizer = optim.Adam(
     #    projector.parameters(),
     #    lr=args.g_lr, betas=args.betas,
     #    weight_decay=args.weight_decay)
     
-    discriminator = networks.define_D(input_nc=args.in_channels, ndf=64, netD='basic',
-        n_layers_D=3, norm='instance', init_type='xavier',
-        init_gain=0.02, no_antialias=True, gpu_ids=[int(args.device[-1])], opt=args)
+    #discriminator = networks.define_D(input_nc=args.in_channels, ndf=64, netD='basic',
+    #    n_layers_D=3, norm='instance', init_type='xavier',
+    #    init_gain=0.02, no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
+    discriminator = Discriminator(args=args).to(args.device)
     d_optimizer = optim.Adam(
         discriminator.parameters(),
-        lr=args.d_lr, betas=args.betas, 
-        weight_decay=args.weight_decay)
+        lr=args.d_lr, betas=args.betas)
 
     criterion = nn.CrossEntropyLoss()
-    criterionGAN = networks.GANLoss('lsgan').to(args.device)
+    criterionGAN = nn.CrossEntropyLoss()
+    #criterionGAN = networks.GANLoss('lsgan').to(args.device)
     best_acc, best_class, classNames = train_generator_domain(
         source_cnn, generator, projector, discriminator,
         criterion, criterionGAN, g_optimizer, d_optimizer,
         source_train_loader, target_conf_train_loader, target_val_loader,
-        logger, args=args)
+        logger, wandb, args=args)
     bestClassWiseDict = {}
     for cls_idx, clss in enumerate(classNames):
         bestClassWiseDict[clss] = best_class[cls_idx].item()
@@ -114,16 +121,18 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--betas', type=float, nargs='+', default=(.5, .999))
     parser.add_argument('--netF_nc', type=int, default=256)
+    parser.add_argument('--num_patches', type=int, default=256)
     parser.add_argument('--nce_T', type=float, default=0.07, help='temperature for NCE loss')
     parser.add_argument('--lam', type=float, default=0.25)
     parser.add_argument('--lam_NCE', type=float, default=1.0)
     parser.add_argument('--thr', type=float, default=0.79)
     parser.add_argument('--thr_domain', type=float, default=0.87)
-    parser.add_argument('--num_val', type=int, default=3)  # number of val. within each epoch
+    parser.add_argument('--num_val', type=int, default=6)  # number of val. within each epoch
+    parser.add_argument('--num_visual', type=int, default=20)  # number of val. within each epoch
     # misc
     parser.add_argument('--device', type=str, default='cuda:1')
     parser.add_argument('--n_workers', type=int, default=4)
-    parser.add_argument('--logdir', type=str, default='outputs/sgada_domain')
+    parser.add_argument('--logdir', type=str, default='outputs/domain_exp')
     # office dataset categories
     parser.add_argument('--src_cat', type=str, default='mscoco')
     parser.add_argument('--tgt_cat', type=str, default='flir')
