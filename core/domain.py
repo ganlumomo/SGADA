@@ -26,7 +26,7 @@ def run(args):
         config={
             'epochs': args.epochs,
             'batch_size': args.batch_size,
-        })
+    })
 
     # data loaders
     #dataset_root = os.environ["DATASETDIR"]
@@ -41,7 +41,7 @@ def run(args):
 
     logger.info('SGADA training')
 
-    # train source CNN
+    # load source CNN
     source_cnn = CNN(in_channels=args.in_channels).to(args.device)
     if os.path.isfile(args.trained):
         c = torch.load(args.trained)
@@ -49,8 +49,7 @@ def run(args):
         logger.info('Loaded `{}`'.format(args.trained))
     for param in source_cnn.parameters():
         param.requires_grad = False
-
-    '''
+    
     # train target CNN
     target_cnn = CNN(in_channels=args.in_channels, target=True, srcTrain=False).to(args.device)
     target_cnn.load_state_dict(source_cnn.state_dict())
@@ -60,11 +59,11 @@ def run(args):
         target_cnn.encoder.parameters(), 
         lr=args.lr, betas=args.betas, 
         weight_decay=args.weight_decay)
-    '''
+    print('t: ', networks.count_parameters(target_cnn)) 
     
     # train generator
     generator = networks.define_G(input_nc=args.in_channels, output_nc=args.in_channels, ngf=64,
-        netG='resnet_9blocks', norm='instance', use_dropout=False,
+        netG='resnet_1blocks', norm='instance', use_dropout=False,
         init_type='xavier', init_gain=0.02, no_antialias=False,
         no_antialias_up=False, gpu_ids=[int(args.device[-1])], opt=None)
     g_optimizer = optim.Adam(
@@ -73,24 +72,29 @@ def run(args):
     projector = networks.define_F(input_nc=args.in_channels, netF='mlp_sample', norm='instance',
         use_dropout=False, init_type='xavier', init_gain=0.02,
         no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
+    print('g: ', networks.count_parameters(generator))
     
-    sample_discriminator = networks.define_D(input_nc=args.in_channels, ndf=64, netD='basic',
-        n_layers_D=3, norm='instance', init_type='xavier',
+    sample_discriminator = networks.define_D(input_nc=args.in_channels, ndf=64, netD='n_layers',
+        n_layers_D=1, norm='instance', init_type='xavier',
         init_gain=0.02, no_antialias=False, gpu_ids=[int(args.device[-1])], opt=args)
-    feature_discriminator = Discriminator(args=args).to(args.device)
     sd_optimizer = optim.Adam(
         sample_discriminator.parameters(),
-        lr=args.d_lr, betas=args.betas)
+        lr=args.sd_lr, betas=args.betas)
+    print('sd: ', networks.count_parameters(sample_discriminator))
+    
+    feature_discriminator = Discriminator(args=args).to(args.device)
     fd_optimizer = optim.Adam(
         feature_discriminator.parameters(),
-        lr=args.d_lr, betas=args.betas)
-
+        lr=args.fd_lr, betas=args.betas,
+        weight_decay=args.weight_decay)
+    print('fd: ', networks.count_parameters(feature_discriminator))
+    
     criterion = nn.CrossEntropyLoss()
     sd_criterion = networks.GANLoss('lsgan').to(args.device)
     fd_criterion = nn.CrossEntropyLoss()
     best_acc, best_class, classNames = train_generator_domain(
-        source_cnn, generator, projector, sample_discriminator, feature_discriminator,
-        criterion, sd_criterion, fd_criterion, g_optimizer, sd_optimizer, fd_optimizer,
+        source_cnn, target_cnn, generator, projector, sample_discriminator, feature_discriminator,
+        criterion, sd_criterion, fd_criterion, g_optimizer, sd_optimizer, fd_optimizer, optimizer,
         source_train_loader, target_conf_train_loader, target_val_loader,
         logger, wandb, args=args)
     bestClassWiseDict = {}
@@ -112,8 +116,9 @@ if __name__ == '__main__':
     parser.add_argument('--slope', type=float, default=0.2)
     # train
     parser.add_argument('--lr', type=float, default=1e-5)
+    parser.add_argument('--fd_lr', type=float, default=1e-3)
+    parser.add_argument('--sd_lr', type=float, default=1e-3)
     parser.add_argument('--g_lr', type=float, default=1e-3)
-    parser.add_argument('--d_lr', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=2.5e-5)
     parser.add_argument('--epochs', type=int, default=15)
     parser.add_argument('--batch_size', type=int, default=32)

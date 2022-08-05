@@ -8,9 +8,20 @@ import torch
 from utils.utils import AverageMeter, save, d_save, tensor2im
 from models.patchnce import PatchNCELoss
 from torch import optim
+from models import networks
+
+def normalize(x, mean=(0.4017, 0.3791, 0.3656), std=(0.2093, 0.2019, 0.1996)):
+    x[:, 0] -= mean[0]
+    x[:, 1] -= mean[1]
+    x[:, 2] -= mean[2]
+    x[:, 0] /= std[0]
+    x[:, 1] /= std[1]
+    x[:, 2] /= std[2]
+    return x
 
 def train_generator_domain(
     source_cnn,
+    target_cnn,
     generator,
     projector,
     sample_discriminator,
@@ -21,6 +32,7 @@ def train_generator_domain(
     g_optimizer,
     sd_optimizer,
     fd_optimizer,
+    optimizer,
     source_train_loader,
     target_train_loader,
     target_test_loader,
@@ -35,25 +47,26 @@ def train_generator_domain(
         best_score = None
         best_class_score = None
         p_optimizer = None
+
         for epoch_i in range(1, 1 + args.epochs):
-            
             # training
             start_time = time()
             training = generative_adversarial_domain(
-                source_cnn, generator, projector, sample_discriminator, feature_discriminator,
+                source_cnn, target_cnn, generator, projector, sample_discriminator, feature_discriminator,
                 source_train_loader, target_train_loader, target_test_loader,
                 criterion, sd_criterion, fd_criterion,
-                g_optimizer, p_optimizer, sd_optimizer, fd_optimizer, 
+                g_optimizer, p_optimizer, sd_optimizer, fd_optimizer, optimizer,
                 best_score, best_class_score, epoch_i, 
                 logger, wandb, args=args
             )
             best_score = training['best_score']
             best_class_score = training['best_class_score']
             n_iters = training['n_iters']
+            p_optimizer = training['p_optimizer']
             
             # validation
             validation = validate(
-                source_cnn, generator, target_test_loader, criterion, args=args)
+                target_cnn, generator, target_test_loader, criterion, args=args)
             clsNames = validation['classNames']
             log = 'Epoch {}/{} '.format(epoch_i, args.epochs)
             log += 'sD/Loss {:.3f} fD/Loss {:.3f} G/Loss {:.3f} '.format(
@@ -97,19 +110,20 @@ def train_generator_domain(
 
 
 def generative_adversarial_domain(
-    source_cnn, generator, projector, sample_discriminator, feature_discriminator, 
+    source_cnn, target_cnn, generator, projector, sample_discriminator, feature_discriminator, 
     source_loader, target_loader, target_test_loader,
     criterion, sd_criterion, fd_criterion,
-    g_optimizer, p_optimizer, sd_optimizer, fd_optimizer, 
+    g_optimizer, p_optimizer, sd_optimizer, fd_optimizer, optimizer,
     best_score, best_class_score, epoch_i, 
     logger, wandb, args=None
 ):
     source_cnn.eval()
+    target_cnn.encoder.train()
     generator.train()
     projector.train()
     sample_discriminator.train()
     feature_discriminator.train()
-
+    
     best_score = best_score
     best_class_score = best_class_score
 
@@ -135,21 +149,19 @@ def generative_adversarial_domain(
         target_domain_conf = target_domain_conf.to(args.device)
         bs = source_data.size(0)
 
+        
         # forward Generator
-        G_input = torch.cat((target_data, source_data), dim=0)
-        G_output = generator(G_input)
-        G_output_source = G_output[bs:] # idt_B
-        G_output_target = G_output[:bs] # fake_B
-
-        ## Train Discriminators
+        #G_input = torch.cat((target_data, source_data), dim=0)
+        #G_output = generator(G_input)
+        #G_output_source = G_output[bs:] # idt_B
+        #G_output_target = G_output[:bs] # fake_B
+        G_output_target = generator(target_data)
+        
+        ## Train sample discriminator
         for param in sample_discriminator.parameters():
             param.requires_grad = True
         sd_optimizer.zero_grad()
-        for param in feature_discriminator.parameters():
-            param.requires_grad = True
-        fd_optimizer.zero_grad()
-
-        # compute sample D loss
+        # compute D loss
         sd_output_source = sample_discriminator(source_data)
         sd_output_target = sample_discriminator(G_output_target.detach())
         sd_loss = (sd_criterion(sd_output_source, False).mean() + sd_criterion(sd_output_target, True).mean()) * 0.5
@@ -157,66 +169,77 @@ def generative_adversarial_domain(
         sd_optimizer.step()
         sd_losses.update(sd_loss.item(), bs)
 
-        # compute feature D loss
-        fd_input_source = source_cnn.encoder(source_data)
-        fd_input_target = source_cnn.encoder(G_output_target)
+        ## Train generator
+        for param in sample_discriminator.parameters():
+            param.requires_grad = False
+        g_optimizer.zero_grad()
+        if p_optimizer is not None:
+            p_optimizer.zero_grad()
+        # compute G loss
+        sd_output_target = sample_discriminator(G_output_target)
+        loss_sGAN = sd_criterion(sd_output_target, False).mean()
+        loss_NCE = calculate_NCE_loss(generator, projector, target_data, G_output_target, args) 
+        #+ calculate_NCE_loss(generator, projector, source_data, G_output_source, args)) * 0.5
+        g_loss = loss_sGAN + args.lam_NCE * loss_NCE
+        g_loss.backward()
+        if p_optimizer is None:
+            p_optimizer = optim.Adam(projector.parameters(), lr=args.g_lr, betas=args.betas)
+            p_optimizer.zero_grad()
+            print('p: ', networks.count_parameters(projector))
+        g_optimizer.step()
+        p_optimizer.step()
+        g_losses.update(g_loss.item(), bs)
+        
+        ## Train feature discriminator
+        fd_input_source = source_cnn.encoder(normalize(source_data))
+        fd_input_target = target_cnn.encoder(G_output_target.detach())
+        #fd_input_target = target_cnn.encoder(target_data)
         fd_target_source = torch.tensor(
             [0] * bs, dtype=torch.long).to(args.device)
         fd_target_target = torch.tensor(
             [1] * bs, dtype=torch.long).to(args.device)
 
         fd_output_source = feature_discriminator(fd_input_source)
-        fd_output_target = feature_discriminator(fd_input_target.detach())
+        fd_output_target = feature_discriminator(fd_input_target)
         fd_output = torch.cat([fd_output_source, fd_output_target], dim=0)
         fd_target = torch.cat([fd_target_source, fd_target_target], dim=0)
         fd_loss = fd_criterion(fd_output, fd_target)
+        fd_optimizer.zero_grad()
         fd_loss.backward()
         fd_optimizer.step()
         fd_losses.update(fd_loss.item(), bs)
 
-        # Train Generator
-        for param in sample_discriminator.parameters():
-            param.requires_grad = False
-        for param in feature_discriminator.parameters():
-            param.requires_grad = False
-        g_optimizer.zero_grad()
-        if p_optimizer is not None:
-            p_optimizer.zero_grad()
-
-        # compute G loss
-        sd_output_target = sample_discriminator(G_output_target)
+        # Train target cnn
+        fd_input_target = target_cnn.encoder(G_output_target.detach())
+        #fd_input_target = target_cnn.encoder(target_data)
         fd_output_target = feature_discriminator(fd_input_target)
-        loss_sGAN = sd_criterion(sd_output_target, False).mean()
         loss_fGAN = fd_criterion(fd_output_target, fd_target_source)
-        loss_NCE = (calculate_NCE_loss(generator, projector, target_data, G_output_target, args) + 
-                    calculate_NCE_loss(generator, projector, source_data, G_output_source, args)) * 0.5
 
-        '''
         # compute self training loss
-        G_output_target_P = source_cnn(G_output_target)
+        '''
+        fd_output_target_P = target_cnn.classifier(fd_input_target)
         validSource = (target_domain == 0) & (target_conf >= args.thr)
         validMaskSource = validSource.nonzero(as_tuple=False)[:, 0]
         validTarget = (target_domain == 1) & (target_domain_conf <= args.thr_domain) & (target_conf >= args.thr)
         validMaskTarget = validTarget.nonzero(as_tuple=False)[:, 0]
         validIndexes = torch.cat((validMaskSource, validMaskTarget), 0)
-        loss_ST = criterion(G_output_target_P[validIndexes], target_target[validIndexes])
+        loss_ST = criterion(fd_output_target_P[validIndexes], target_target[validIndexes])
+        t_loss = loss_fGAN + args.lam * loss_ST
         '''
-        g_loss = loss_sGAN + loss_fGAN + args.lam_NCE * loss_NCE
-        g_loss.backward()
-        if p_optimizer is None:
-            p_optimizer = optim.Adam(projector.parameters(), lr=args.g_lr, betas=args.betas)
-        g_optimizer.step()
-        p_optimizer.step()
-        g_losses.update(g_loss.item(), bs)
-        
+        optimizer.zero_grad()
+        loss_fGAN.backward()
+        optimizer.step()
+
         # track training metrics
         wandb.log({
             'train/sd_loss': sd_loss.item(),
-            'train/fd_loss': fd_loss.item(),
             'train/g_loss_sgan': loss_sGAN.item(),
-            'train/g_loss_fgan': loss_fGAN.item(),
             'train/g_loss_nce': loss_NCE.item(),
             'train/g_loss': g_loss.item(),
+            'train/fd_loss': fd_loss.item(),
+            'train/loss_fgan': loss_fGAN.item(),
+            #'train/loss_st' : loss_ST.item(),
+            #'train/t_loss': t_loss.item()
         })
 
         if iter_i in visuals:
@@ -224,12 +247,12 @@ def generative_adversarial_domain(
                 'real_target': wandb.Image(tensor2im(target_data)),
                 'fake_source': wandb.Image(tensor2im(G_output_target)),
                 'real_source': wandb.Image(tensor2im(source_data)),
-                'idt_source': wandb.Image(tensor2im(G_output_source))
+                #'idt_source': wandb.Image(tensor2im(G_output_source))
             })
 
         if iter_i in vals:
             validation = validate(
-                source_cnn, generator, target_test_loader, 
+                target_cnn, generator, target_test_loader, 
                 criterion, args=args)
             clsNames = validation['classNames']
             is_best = (best_score is None or validation['avgAcc'] > best_score)
@@ -258,12 +281,13 @@ def generative_adversarial_domain(
                 'val/avg_acc': validation['avgAcc'],
             })
             source_cnn.eval()
+            target_cnn.encoder.train()
             generator.train()
             projector.train()
             sample_discriminator.train()
             feature_discriminator.train()
 
-    return {'sd/loss': sd_losses.avg, 'fd/loss': fd_losses.avg, 'g/loss': g_losses.avg, 'best_score': best_score, 'best_class_score': best_class_score, 'n_iters': n_iters}
+    return {'p_optimizer': p_optimizer, 'sd/loss': sd_losses.avg, 'fd/loss': fd_losses.avg, 'g/loss': g_losses.avg, 'best_score': best_score, 'best_class_score': best_class_score, 'n_iters': n_iters}
 
 
 def step(model, generator, data, target, criterion, args):
@@ -314,7 +338,7 @@ def validate(model, generator, dataloader, criterion, args=None):
     }
 
 def calculate_NCE_loss(generator, projector, src, tgt, args):
-    nce_layers = [0, 4, 8, 12, 16]
+    nce_layers = [0, 4, 8, 12]
     criterion = PatchNCELoss(args).to(args.device) 
     n_layers = len(nce_layers)
     
