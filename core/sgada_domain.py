@@ -6,12 +6,14 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from models.resnet50off import CNN, Discriminator
+from models.resnet50off import CNN, Discriminator, PatchSampleF
+from models.losses import SupConLoss
 from core.trainer import train_target_cnnP_domain
 from utils.utils import get_logger
 from utils.altutils import get_mscoco, get_flir, get_flir_from_list_wdomain
 from utils.altutils import setLogger
 import logging
+import wandb
 
 
 def run(args):
@@ -21,7 +23,8 @@ def run(args):
     logger.info(args)
 
     # data loaders
-    dataset_root = os.environ["DATASETDIR"]
+    #dataset_root = os.environ["DATASETDIR"]
+    dataset_root = '../../SGADA/dataset_dir/'
     source_train_loader = get_mscoco(dataset_root, args.batch_size, train=True)
     target_train_loader = get_flir(dataset_root, args.batch_size, train=True)
     target_val_loader = get_flir(dataset_root, args.batch_size, train=False)
@@ -31,6 +34,12 @@ def run(args):
                     'classNames': source_train_loader.dataset.classes}
 
     logger.info('SGADA training')
+    wandb.init(
+        project='domain-exp-classification', 
+        config={
+            'epochs': args.epochs,
+            'batch_size': args.batch_size,
+    })
 
     # train source CNN
     source_cnn = CNN(in_channels=args.in_channels).to(args.device)
@@ -51,16 +60,19 @@ def run(args):
         lr=args.lr, betas=args.betas, 
         weight_decay=args.weight_decay)
 
+    # define mlp
+    projector = PatchSampleF(use_mlp=True, init_type='xavier', init_gain=0.02, gpu_ids=[int(args.device[-1])], nc=256)
     discriminator = Discriminator(args=args).to(args.device)
     criterion = nn.CrossEntropyLoss()
+    sc_criterion =  SupConLoss()
     d_optimizer = optim.Adam(
         discriminator.parameters(),
         lr=args.d_lr, betas=args.betas, weight_decay=args.weight_decay)
     best_acc, best_class, classNames = train_target_cnnP_domain(
-        source_cnn, target_cnn, discriminator,
-        criterion, optimizer, d_optimizer,
+        source_cnn, target_cnn, discriminator, projector,
+        criterion, sc_criterion, optimizer, d_optimizer,
         source_train_loader, target_conf_train_loader, target_val_loader,
-        logger, args=args)
+        logger, wandb, args=args)
     bestClassWiseDict = {}
     for cls_idx, clss in enumerate(classNames):
         bestClassWiseDict[clss] = best_class[cls_idx].item()
@@ -88,7 +100,7 @@ if __name__ == '__main__':
     parser.add_argument('--lam', type=float, default=0.25)
     parser.add_argument('--thr', type=float, default=0.79)
     parser.add_argument('--thr_domain', type=float, default=0.87)
-    parser.add_argument('--num_val', type=int, default=3)  # number of val. within each epoch
+    parser.add_argument('--num_val', type=int, default=6)  # number of val. within each epoch
     # misc
     parser.add_argument('--device', type=str, default='cuda:1')
     parser.add_argument('--n_workers', type=int, default=4)

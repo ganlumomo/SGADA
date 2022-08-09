@@ -6,19 +6,23 @@ import numpy as np
 from sklearn.metrics import accuracy_score
 import torch
 from utils.utils import AverageMeter, save
+from torch import optim
 
 
 def train_target_cnnP_domain(
     source_cnn,
     target_cnn,
     discriminator,
+    projector,
     criterion,
+    sc_criterion,
     optimizer,
     d_optimizer,
     source_train_loader,
     target_train_loader,
     target_test_loader,
     logger,
+    wandb,
     args=None
 ):
     validation = validate(source_cnn, target_test_loader, criterion, args=args)
@@ -27,13 +31,14 @@ def train_target_cnnP_domain(
     try:
         best_score = None
         best_class_score = None
+        p_optimizer = None
         for epoch_i in range(1, 1 + args.epochs):
             start_time = time()
             training = adversarial_domain(
-                source_cnn, target_cnn, discriminator,
+                source_cnn, target_cnn, discriminator, projector,
                 source_train_loader, target_train_loader, target_test_loader,
-                criterion, criterion,
-                optimizer, d_optimizer, best_score, best_class_score, epoch_i, logger, args=args
+                criterion, criterion, sc_criterion,
+                optimizer, d_optimizer, p_optimizer, best_score, best_class_score, epoch_i, logger, wandb, args=args
             )
             best_score = training['best_score']
             best_class_score = training['best_class_score']
@@ -50,6 +55,13 @@ def train_target_cnnP_domain(
             log += 'Time {:.2f}s'.format(time() - start_time)
             logger.info(log)
 
+            # track validation metrics
+            wandb.log({
+                'val/loss': validation['loss'],
+                'val/acc': validation['acc'],
+                'val/avg_acc': validation['avgAcc'],
+            })
+            
             # save
             is_best = (best_score is None or validation['avgAcc'] > best_score)
             best_score = validation['avgAcc'] if is_best else best_score
@@ -77,14 +89,15 @@ def train_target_cnnP_domain(
 
 
 def adversarial_domain(
-    source_cnn, target_cnn, discriminator,
+    source_cnn, target_cnn, discriminator, projector,
     source_loader, target_loader, target_test_loader,
-    criterion, d_criterion,
-    optimizer, d_optimizer, best_score, best_class_score, epoch_i, logger, args=None
+    criterion, d_criterion, sc_criterion,
+    optimizer, d_optimizer, p_optimizer, best_score, best_class_score, epoch_i, logger, wandb, args=None
 ):
     source_cnn.eval()
     target_cnn.encoder.train()
     discriminator.train()
+    projector.train()
 
     best_score = best_score
     best_class_score = best_class_score
@@ -99,6 +112,7 @@ def adversarial_domain(
         source_data, source_target = source_iter.next()
         target_data, target_target, target_conf, target_domain, target_domain_conf = target_iter.next()
         source_data = source_data.to(args.device)
+        source_target = source_target.to(args.device)
         target_data = target_data.to(args.device)
         target_target = target_target.to(args.device)
         target_conf = target_conf.to(args.device)
@@ -125,21 +139,44 @@ def adversarial_domain(
         d_losses.update(d_loss.item(), bs)
 
         # train Target
-        D_input_target = target_cnn.encoder(target_data)
+        D_input_source, source_feats = source_cnn.encoder(source_data, encoder_only=True)
+        D_input_target, feats = target_cnn.encoder(target_data, encoder_only=True)
+        #D_input_target = target_cnn.encoder(target_data)
         D_output_target = discriminator(D_input_target)
-        D_output_target_P = target_cnn.classifier(D_input_target)
         lossT = criterion(D_output_target, D_target_source)
         validSource = (target_domain == 0) & (target_conf >= args.thr)
         validMaskSource = validSource.nonzero(as_tuple=False)[:, 0]
         validTarget = (target_domain == 1) & (target_domain_conf <= args.thr_domain) & (target_conf >= args.thr)
         validMaskTarget = validTarget.nonzero(as_tuple=False)[:, 0]
         validIndexes = torch.cat((validMaskSource, validMaskTarget), 0)
+        D_output_target_P = target_cnn.classifier(D_input_target)
         lossP = criterion(D_output_target_P[validIndexes], target_target[validIndexes])
-        loss = lossT + args.lam*lossP
+        #loss = lossT + args.lam*lossP
+        # compute supcon loss
+        projected_feats = projector(feats)
+        projected_source_feats = projector(source_feats)
+        lossSC = sc_criterion(torch.cat((projected_feats[validIndexes], projected_source_feats), dim=0), torch.cat((target_target[validIndexes], source_target), dim=0))
+        #lossSC = sc_criterion(projected_feats[validIndexes], target_target[validIndexes])
+        loss = lossT + lossSC
         optimizer.zero_grad()
+        if p_optimizer is not None:
+            p_optimizer.zero_grad()
         loss.backward()
+        if p_optimizer is None:
+            p_optimizer = optim.Adam(projector.parameters(), lr=1e-3, betas=args.betas)
         optimizer.step()
+        p_optimizer.step()
         losses.update(loss.item(), bs)
+
+        # track training metrics
+        wandb.log({
+            'train/d_loss' : d_loss.item(),
+            'train/lossT': lossT.item(),
+            'train/lossP': lossP.item(),
+            'train/lossSC': lossSC.item(),
+            'train/loss': loss.item(),
+        })
+
         if iter_i in vals:
             validation = validate(
                 target_cnn, target_test_loader, 

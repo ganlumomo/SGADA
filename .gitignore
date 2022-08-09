@@ -1,3 +1,5 @@
+sgada_model_files*
+wandb*
 outputs*
 
 # Byte-compiled / optimized / DLL files
